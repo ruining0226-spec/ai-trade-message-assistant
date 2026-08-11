@@ -8,12 +8,18 @@ test("旧任务缺少分析来源和新增视觉字段时仍可打开", () => {
     id: "old", customer: { id: "c", name: "A", title: "B", companyName: "C", country: "", industry: "", customerType: "设备集成商" },
     analysis: { mainBusiness: "", decisionInfluence: "高 — 旧说明", potentialApplications: "", recommendedAngle: "", completeness: 50, uncertainties: "" },
     images: [], config: { channel: "LinkedIn" }, versions: [], selectedVersionId: "", createdAt: "", updatedAt: "", status: "待确认", followUpDate: "", notes: "", followUps: [],
+    followUpContext: { stage: "connected", objective: "legacy", tone: "legacy", additionalFacts: "", messages: [{ id: "legacy-message", taskId: "old", role: "sales", platform: "linkedin", content: "Legacy sent message", createdAt: "2026-08-10T00:00:00.000Z" }] },
   } as unknown as Task;
   const normalized = normalizeTask(legacy);
   assert.equal(normalized.analysisSource, "legacy");
   assert.equal(normalized.analysis.decisionInfluence, "无法判断");
   assert.deepEqual(normalized.analysis.evidence, []);
   assert.equal(normalized.analysis.structuredFields, undefined);
+  assert.equal(normalized.followUpStage, "connected");
+  assert.equal(normalized.conversationMessages[0]?.role, "salesperson");
+  assert.equal(normalized.conversationMessages[0]?.taskId, "old");
+  assert.deepEqual(normalized.followUpGenerations, []);
+  assert.equal(normalized.lastContactAt, "2026-08-10T00:00:00.000Z");
 });
 
 test("旧多版本任务只保留原来选中的当前结果", () => {

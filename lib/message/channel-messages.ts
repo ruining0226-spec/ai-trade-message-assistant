@@ -50,3 +50,9 @@ export const formatMessageBilingual = (message: ChannelMessage) => `${message.ti
 export const formatAllEnglish = (messages: ChannelMessage[]) => messages.map(formatMessageEnglish).join("\n\n---\n\n");
 
 export const formatAllBilingual = (messages: ChannelMessage[]) => messages.map(formatMessageBilingual).join("\n\n---\n\n");
+
+export function formatMessagesForFollowUpContext(content: MessageContent, channel: Channel) {
+  return getChannelMessages(content, channel)
+    .map(message => `${message.titleEn}:\n${message.english}\nChinese translation:\n${message.chinese}`)
+    .join("\n\n");
+}

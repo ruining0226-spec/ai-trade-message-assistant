@@ -4,10 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useAppData } from "@/components/providers/app-data-provider";
+import { CustomerFollowUp } from "@/components/task/customer-follow-up";
+import { ResultStep } from "@/components/task/result-step";
 import { PageHeader } from "@/components/ui/page-header";
 import { createVersion } from "@/lib/mock/generator";
-import { formatAllBilingual, formatAllEnglish, formatMessageBilingual, formatMessageEnglish, getChannelMessages, updateChannelMessage } from "@/lib/message/channel-messages";
-import { applyOptimizationResult, buildOptimizationRequest, createOptimizationSnapshot, QUICK_OPTIMIZATION_REQUIREMENTS, restoreOptimizationSnapshot, toSingleResultStorage } from "@/lib/message/optimization";
+import { applyOptimizationResult, buildOptimizationRequest, createOptimizationSnapshot, restoreOptimizationSnapshot, toSingleResultStorage } from "@/lib/message/optimization";
+import { getLastContactAt, normalizeConversationMessages, normalizeFollowUpGenerations, normalizeFollowUpStage } from "@/lib/follow-up/context";
 import { applyManualConfirmation, CONFIRMATION_NEXT_STEP, CUSTOMER_DETAILS_DEFAULT_OPEN, getConfirmationRisks, getConfirmationStatus, getCustomerSummary, setConfirmationUnknown, type ConfirmationFieldKey } from "@/lib/customer/confirmation";
 import { assertPreparedUpload, ClientImageError, postPreparedImages, prepareClientImages, toPersistedImageMetadata } from "@/lib/vision/client-images";
 import { MAX_IMAGE_COUNT, MAX_PREPARED_IMAGE_BYTES, MAX_PREPARED_TOTAL_BYTES } from "@/lib/vision/limits";
@@ -27,9 +29,9 @@ const customerTypeLabels: Record<CustomerTypeCode, CustomerType> = {
 const confidenceLabels: Record<Confidence, string> = { high: "高置信度", medium: "中等置信度", low: "低置信度" };
 const sourceLabels: Record<FieldSource, string> = { screenshot: "截图事实", inference: "AI推测", unknown: "无法确认" };
 
-export function TaskWizard({ taskId }: { taskId?: string }) {
+export function TaskWizard({ taskId, initialFollowUp = false }: { taskId?: string; initialFollowUp?: boolean }) {
   const router = useRouter();
-  const { tasks, hydrated, upsertTask } = useAppData();
+  const { tasks, hydrated, storageError, clearStorageError, upsertTask } = useAppData();
   const [step, setStep] = useState(1);
   const [images, setImages] = useState<TaskImage[]>([]);
   const [customer, setCustomer] = useState<Customer>({ ...demoCustomer, id: createId() });
@@ -46,6 +48,7 @@ export function TaskWizard({ taskId }: { taskId?: string }) {
   const [draft, setDraft] = useState<MessageContent | null>(null);
   const [optimizationUndo, setOptimizationUndo] = useState<MessageContent | null>(null);
   const [optimizing, setOptimizing] = useState(false);
+  const [followUpOpen, setFollowUpOpen] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState(taskId || "");
   const [createdAt, setCreatedAt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -130,8 +133,8 @@ export function TaskWizard({ taskId }: { taskId?: string }) {
     }
     setActiveTaskId(task.id); setCreatedAt(task.createdAt); setCustomer(task.customer); setAnalysis(task.analysis); setAnalysisSource(task.analysisSource || "legacy"); setConfig(task.config); setImages(task.images);
     const version = task.versions[0]; setCurrentVersion(version || null);
-    setDraft(version?.content || null); setStep(version ? 4 : 2);
-  }, [hydrated, taskId, tasks]);
+    setDraft(version?.content || null); setStep(version ? 4 : 2); setFollowUpOpen(Boolean(version && initialFollowUp));
+  }, [hydrated, initialFollowUp, taskId, tasks]);
   const notify = (text: string) => { setToast(text); window.setTimeout(() => setToast(""), 2200); };
 
   const acceptFiles = async (files: FileList | File[]) => {
@@ -231,14 +234,19 @@ export function TaskWizard({ taskId }: { taskId?: string }) {
 
   const makeTask = (result: MessageVersion | null): Task => {
     const now = new Date().toISOString();
-    return { id: activeTaskId || createId(), customer, analysis, analysisSource, images: toPersistedImageMetadata(images), config, ...toSingleResultStorage(result), createdAt: createdAt || now, updatedAt: now, status: "已生成", followUpDate: taskId ? tasks.find(t => t.id === taskId)?.followUpDate || "" : "", notes: taskId ? tasks.find(t => t.id === taskId)?.notes || "" : "", followUps: taskId ? tasks.find(t => t.id === taskId)?.followUps || [] : [] };
+    const id = activeTaskId || createId();
+    const existing = tasks.find(item => item.id === id);
+    const conversationMessages = normalizeConversationMessages(existing?.conversationMessages, id);
+    return { id, customer, analysis, analysisSource, images: toPersistedImageMetadata(images), config, ...toSingleResultStorage(result), createdAt: createdAt || now, updatedAt: now, status: existing?.status || "已生成", followUpDate: existing?.followUpDate || "", notes: existing?.notes || "", followUps: existing?.followUps || [], conversationMessages, followUpGenerations: normalizeFollowUpGenerations(existing?.followUpGenerations, id), followUpStage: normalizeFollowUpStage(existing?.followUpStage), lastContactAt: existing?.lastContactAt || getLastContactAt(conversationMessages) };
   };
 
   // Single-result persistence boundary. Future AI optimization can replace the result here without introducing history state.
   const persistCurrentResult = (result: MessageVersion, nextConfig = config) => {
     setCurrentVersion(result); setDraft(result.content); setConfig(nextConfig);
     const task = { ...makeTask(result), config: nextConfig };
-    setActiveTaskId(task.id); setCreatedAt(task.createdAt); upsertTask(task); return task;
+    setActiveTaskId(task.id); setCreatedAt(task.createdAt);
+    if (!upsertTask(task)) setError("本地保存失败，当前结果尚未可靠写入浏览器，请检查存储空间后重试。");
+    return task;
   };
 
   const generate = () => {
@@ -298,16 +306,35 @@ export function TaskWizard({ taskId }: { taskId?: string }) {
     catch { setError("浏览器阻止了复制，请选中文本后手动复制。"); }
   };
 
+  const openFollowUp = () => {
+    if (!activeTaskId) { setError("请先保存当前结果，再进入客户持续跟进。"); return; }
+    setFollowUpOpen(true);
+    router.replace(`/tasks/new?id=${activeTaskId}&followUp=1`);
+  };
+
+  const closeFollowUp = () => {
+    setFollowUpOpen(false);
+    router.replace(`/tasks/new?id=${activeTaskId}`);
+  };
+
+  const activeTask = tasks.find(item => item.id === activeTaskId);
+  if (followUpOpen && activeTask) return <>
+    <PageHeader eyebrow="Customer follow-up" title={`持续跟进：${activeTask.customer.name || "未命名客户"}`} description="记录单一客户的沟通时间线，并基于当前任务上下文生成安全的后续回复。" action={<button className="btn-secondary" onClick={() => router.push("/tasks")}>返回历史任务</button>} />
+    {storageError && <div className="mb-5 flex flex-col justify-between gap-2 rounded-xl border border-[#edc9c1] bg-[#fff5f2] px-4 py-3 text-sm font-semibold text-[#983d2c] sm:flex-row sm:items-center"><span>{storageError}</span><button className="btn-quiet !min-h-8 !px-2" onClick={clearStorageError}>关闭</button></div>}
+    <CustomerFollowUp key={activeTask.id} task={activeTask} onUpdate={upsertTask} onBack={closeFollowUp} />
+  </>;
+
   return <>
     <PageHeader eyebrow={taskId ? "Continue task" : "New analysis"} title={taskId ? `继续编辑：${customer.name}` : "新建客户分析"} description="上传截图后先校对客户资料，再生成有业务依据、不过度承诺的开发信。" action={taskId ? <button className="btn-secondary" onClick={() => router.push("/tasks")}>返回历史任务</button> : undefined} />
     <div className="card mb-6 overflow-hidden"><div className="grid grid-cols-4">{steps.map((label, index) => { const number = index + 1; return <div key={label} className={`border-r border-[#e1e8e5] px-2 py-4 text-center last:border-r-0 ${step === number ? "bg-[#edf6f2]" : ""}`}><div className={`mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full text-xs font-black ${step >= number ? "bg-[#087a5b] text-white" : "bg-[#e7ecea] text-[#788680]"}`}>{number}</div><div className={`text-xs font-bold sm:text-sm ${step === number ? "text-[#075f49]" : "text-[#68766f]"}`}>{label}</div></div>; })}</div></div>
     {error && <div className="mb-5 rounded-xl border border-[#edc9c1] bg-[#fff5f2] px-4 py-3 text-sm font-semibold text-[#983d2c]">{error}</div>}
+    {storageError && <div className="mb-5 flex flex-col justify-between gap-2 rounded-xl border border-[#edc9c1] bg-[#fff5f2] px-4 py-3 text-sm font-semibold text-[#983d2c] sm:flex-row sm:items-center"><span>{storageError}</span><button className="btn-quiet !min-h-8 !px-2" onClick={clearStorageError}>关闭</button></div>}
     {toast && <div className="fixed right-5 top-20 z-50 rounded-xl bg-[#12372d] px-4 py-3 text-sm font-bold text-white shadow-xl">✓ {toast}</div>}
 
     {step === 1 && <UploadStep images={images} busy={busy} preparingImages={preparingImages} dragging={dragging} setDragging={setDragging} acceptFiles={acceptFiles} remove={id => setImages(items => items.filter(x => x.id !== id))} analyze={analyze} cancel={() => abortRef.current?.abort()} mode={analysisMode} modeMessage={modeMessage} configChecking={configChecking} configCheckFailed={configCheckFailed} retryConfigCheck={checkVisionConfig} stage={analysisStage} analysisFailed={analysisFailed} useDemo={runDemoAnalysis} />}
     {step === 2 && <ConfirmStep customer={customer} analysis={analysis} analysisSource={analysisSource} setCustomer={setCustomer} setAnalysis={setAnalysis} back={() => setStep(1)} next={confirmCustomer} />}
     {step === 3 && <ConfigStep config={config} setConfig={setConfig} busy={busy} back={() => setStep(2)} generate={generate} />}
-    {step === 4 && draft && <ResultStep draft={draft} setDraft={setDraft} channel={config.channel} copy={copy} save={saveDraft} rewrite={simulatedRewrite} optimize={optimizeCurrent} undo={optimizationUndo ? undoOptimization : undefined} optimizing={optimizing} back={() => setStep(3)} />}
+    {step === 4 && draft && <ResultStep draft={draft} analysis={analysis} customer={customer} setDraft={setDraft} channel={config.channel} copy={copy} save={saveDraft} rewrite={simulatedRewrite} optimize={optimizeCurrent} undo={optimizationUndo ? undoOptimization : undefined} optimizing={optimizing} back={() => setStep(3)} onFollowUp={openFollowUp} />}
   </>;
 }
 
@@ -375,23 +402,4 @@ function ConfigStep({ config, setConfig, busy, back, generate }: { config: Gener
     ["channel", "联系渠道", ["LinkedIn", "Facebook", "Email", "WhatsApp"]], ["purpose", "开发目的", ["初次认识", "寻找经销商", "推荐产品", "项目合作", "二次跟进"]], ["customerType", "客户类型", ["经销商", "代理商", "终端工厂", "设备集成商", "工程项目方", "服务商", "其他", "无法判断"]], ["tone", "语气", ["友好简短", "专业正式", "顾问式"]], ["length", "长度", ["极简", "标准", "详细"]], ["language", "输出语言", ["英文", "中英对照"]], ["product", "推广产品", ["永磁变频螺杆空压机", "两级压缩空压机", "无油空压机", "整厂节能系统"]],
   ];
   return <section className="card p-5 md:p-7"><div className="mb-6"><h2 className="section-title">配置开发信</h2><p className="mt-1 text-sm muted">这些条件会记录到任务中，并影响模拟生成结果。</p></div><div className="grid gap-5 md:grid-cols-2">{selects.map(([key, label, options]) => <label key={key}><span className="label">{label}</span><select className={fieldClass} value={config[key]} onChange={e => setConfig({ ...config, [key]: e.target.value })}>{options.map(x => <option key={x}>{x}</option>)}</select></label>)}<label className="md:col-span-2"><span className="label">补充说明</span><textarea rows={4} className={fieldClass} placeholder="例如：避免谈价格，先了解对方是否负责项目配套…" value={config.notes} onChange={e => setConfig({ ...config, notes: e.target.value })} /></label></div><div className="mt-7 flex justify-between"><button className="btn-secondary" onClick={back}>上一步</button><button className="btn-primary min-w-36" disabled={busy} onClick={generate}>{busy ? "正在生成…" : "生成开发信"}</button></div></section>;
-}
-
-function ResultStep({ draft, setDraft, channel, copy, save, rewrite, optimize, undo, optimizing, back }: { draft: MessageContent; setDraft(v: MessageContent): void; channel: GenerationConfig["channel"]; copy(text: string, label: string): void; save(): void; rewrite(mode: "更简短" | "更加友好" | "更加专业" | "重新生成"): void; optimize(customRequirement: string, quickRequirement?: QuickOptimizationLabel): void; undo?: () => void; optimizing: boolean; back(): void }) {
-  const [optimizationRequirement, setOptimizationRequirement] = useState("");
-  const [quickRequirement, setQuickRequirement] = useState<QuickOptimizationLabel | undefined>();
-  const analysisSections: Array<[keyof MessageContent, string, number]> = [["identityAnalysis", "1. 客户身份与业务分析", 3], ["businessConnection", "2. 客户与空压机业务的潜在联系", 3], ["recommendedAngle", "3. 推荐沟通切入点", 3]];
-  const closingSections: Array<[keyof MessageContent, string, number]> = [["personalizationBasis", "7. 本次开发信的个性化依据", 3], ["uncertaintyNotice", "8. AI 不确定信息提示", 3]];
-  const messages = getChannelMessages(draft, channel);
-  const rowsFor = (messageId: string, text: string) => messageId === "email-subject" ? 2 : Math.min(9, Math.max(4, Math.ceil(text.length / 95) + 2));
-  return <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_310px]"><section className="card p-5 md:p-7"><div className="flex flex-col justify-between gap-4 border-b border-[#e1e8e5] pb-5 sm:flex-row sm:items-start"><div><div className="flex flex-wrap items-center gap-2"><h2 className="section-title">生成结果</h2><span className="badge">已保存至本地</span></div><p className="mt-1 text-sm muted">所有内容都可直接编辑。手动编辑后点击“保存当前结果”。</p></div><button className="btn-secondary" onClick={back}>调整生成条件</button></div>
-      <div className="mt-5 flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => copy(formatAllEnglish(messages), "全部英文")}>复制全部英文</button><button className="btn-secondary" onClick={() => copy(formatAllBilingual(messages), "全部中英双语")}>复制全部中英双语</button></div>
-      <div className="mt-6 space-y-5">{analysisSections.map(([key, label, rows]) => <label key={key} className="block"><span className="label">{label}</span><textarea className="field leading-6" rows={rows} value={draft[key] as string} disabled={optimizing} onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>)}</div>
-      <div className="mt-6 space-y-5">{messages.map((message, index) => <section className="rounded-2xl border border-[#dce5e1] bg-[#fbfcfc] p-4 md:p-5" key={message.id}><div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><h3 className="font-black">{index + 4}. {message.title}</h3><div className="flex flex-wrap gap-2"><button className="btn-secondary !min-h-8 !px-3 text-xs" disabled={optimizing} onClick={() => copy(formatMessageEnglish(message), `${message.title}英文`)}>复制英文</button><button className="btn-secondary !min-h-8 !px-3 text-xs" disabled={optimizing} onClick={() => copy(formatMessageBilingual(message), `${message.title}中英双语`)}>复制中英双语</button></div></div><label className="block"><span className="mb-2 inline-flex rounded-full bg-[#e8efec] px-2.5 py-1 text-xs font-bold text-[#41564e]">英文</span><textarea className="field leading-6" rows={rowsFor(message.id, message.english)} value={message.english} disabled={optimizing} onChange={e => setDraft(updateChannelMessage(draft, channel, index, "english", e.target.value))} /></label><label className="mt-3 block"><span className="mb-2 inline-flex rounded-full bg-[#dfeee8] px-2.5 py-1 text-xs font-bold text-[#23614f]">中文翻译</span><textarea className="field !bg-[#f1f7f4] leading-6" rows={rowsFor(message.id, message.chinese)} value={message.chinese} disabled={optimizing} onChange={e => setDraft(updateChannelMessage(draft, channel, index, "chinese", e.target.value))} /></label></section>)}</div>
-      <div className="mt-6 space-y-5">{closingSections.map(([key, label, rows]) => <label key={key} className="block"><span className="label">{label}</span><textarea className="field leading-6" rows={rows} value={draft[key] as string} disabled={optimizing} onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>)}</div>
-      <div className="mt-7 rounded-xl border border-[#d9e5e0] bg-[#fafcfc] p-4"><div className="font-black">AI 文案优化</div><p className="mt-1 text-xs leading-5 muted">只优化当前可发送文案及中文翻译，不会重新分析截图或修改客户事实。</p><textarea className="field mt-3" rows={3} placeholder="告诉AI你希望怎样修改当前文案……" value={optimizationRequirement} disabled={optimizing} onChange={event => setOptimizationRequirement(event.target.value)} /><div className="mt-3 flex flex-wrap gap-2">{(Object.keys(QUICK_OPTIMIZATION_REQUIREMENTS) as QuickOptimizationLabel[]).map(label => <button type="button" className={`btn-secondary !min-h-9 !px-3 text-xs ${quickRequirement === label ? "border-[#087a5b] bg-[#eff8f4] text-[#075f49]" : ""}`} key={label} disabled={optimizing} onClick={() => setQuickRequirement(current => current === label ? undefined : label)}>{label}</button>)}</div><div className="mt-4 flex flex-wrap items-center gap-2"><button className="btn-primary" disabled={optimizing || (!optimizationRequirement.trim() && !quickRequirement)} onClick={() => optimize(optimizationRequirement, quickRequirement)}>{optimizing ? "AI正在优化…" : "AI优化"}</button>{undo && <button className="btn-secondary" disabled={optimizing} onClick={undo}>撤销本次优化</button>}{optimizing && <span className="text-xs font-bold text-[#53645e]">正在调用豆包优化当前文案，请稍候…</span>}</div></div>
-      <div className="sticky bottom-3 mt-4 flex flex-wrap gap-2 rounded-xl border border-[#d9e5e0] bg-white/95 p-3 shadow-lg backdrop-blur"><button className="btn-primary" disabled={optimizing} onClick={save}>保存当前结果</button><button className="btn-secondary" disabled={optimizing} onClick={() => rewrite("重新生成")}>重新生成</button></div>
-    </section>
-    <aside><div className="card p-5"><h3 className="font-black">写作护栏</h3><ul className="mt-3 space-y-2 text-xs leading-5 muted"><li>• 先谈客户业务，再连接用气场景</li><li>• 不把潜在需求写成已确认事实</li><li>• 不虚构参数、认证与合作关系</li><li>• 用自然问题开启下一步交流</li></ul></div></aside>
-  </div>;
 }

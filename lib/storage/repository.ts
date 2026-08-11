@@ -1,17 +1,27 @@
 import { defaultCompanyProfile, defaultConfig, defaultProducts } from "@/lib/mock/defaults";
 import { getChannelMessages } from "@/lib/message/channel-messages";
+import { getLastContactAt, normalizeConversationMessages, normalizeFollowUpGenerations, normalizeFollowUpStage } from "@/lib/follow-up/context";
 import type { Channel, CompanyProfile, MessageContent, Product, Task } from "@/types";
 
 const KEYS = { tasks: "trade-assistant.tasks.v1", company: "trade-assistant.company.v1", products: "trade-assistant.products.v1" };
+let storageError = "";
 
 function read<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try { const value = window.localStorage.getItem(key); return value ? JSON.parse(value) as T : fallback; }
-  catch { return fallback; }
+  catch {
+    storageError = "本地数据读取失败，可能是浏览器存储数据已损坏。系统已使用安全默认值，请不要继续覆盖数据，建议先导出或备份浏览器数据。";
+    return fallback;
+  }
 }
 
 function write<T>(key: string, value: T) {
-  if (typeof window !== "undefined") window.localStorage.setItem(key, JSON.stringify(value));
+  if (typeof window === "undefined") return true;
+  try { window.localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch {
+    storageError = "本地保存失败，浏览器存储空间可能已满或当前页面无存储权限。请清理空间后重试，刚才的内容尚未可靠保存。";
+    return false;
+  }
 }
 
 export const storageRepository = {
@@ -21,6 +31,7 @@ export const storageRepository = {
   saveCompany: (profile: CompanyProfile) => write(KEYS.company, profile),
   getProducts: () => read<Product[]>(KEYS.products, defaultProducts),
   saveProducts: (products: Product[]) => write(KEYS.products, products),
+  consumeStorageError: () => { const error = storageError; storageError = ""; return error; },
 };
 
 const channels: Channel[] = ["LinkedIn", "Facebook", "Email", "WhatsApp"];
@@ -36,6 +47,8 @@ export function normalizeTask(task: Task): Task {
     return { ...version, content: { ...content, messages: getChannelMessages(content, channel) } };
   });
   const currentResult = normalizedResults.find(result => result.id === task.selectedVersionId) || normalizedResults.at(-1);
+  const legacyContext = (task as Task & { followUpContext?: { stage?: Task["followUpStage"]; messages?: Task["conversationMessages"] } }).followUpContext;
+  const conversationMessages = normalizeConversationMessages(task.conversationMessages || legacyContext?.messages, task.id);
   return {
     ...task,
     analysisSource: task.analysisSource || "legacy",
@@ -53,5 +66,9 @@ export function normalizeTask(task: Task): Task {
     followUpDate: task.followUpDate || "",
     notes: task.notes || "",
     followUps: task.followUps || [],
+    conversationMessages,
+    followUpGenerations: normalizeFollowUpGenerations(task.followUpGenerations, task.id),
+    followUpStage: normalizeFollowUpStage(task.followUpStage || legacyContext?.stage),
+    lastContactAt: task.lastContactAt || getLastContactAt(conversationMessages),
   };
 }
