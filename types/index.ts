@@ -9,6 +9,11 @@ export type AnalysisSource = "volcengine" | "mock" | "legacy";
 export type FieldSource = "screenshot" | "inference" | "unknown";
 export type Confidence = "high" | "medium" | "low";
 export type CustomerTypeCode = "distributor" | "agent" | "end_user_factory" | "oem_integrator" | "service_provider" | "unknown";
+export type ConversationRole = "customer" | "salesperson";
+export type ConversationPlatform = "linkedin" | "whatsapp" | "email" | "facebook" | "other";
+export type CustomerStage = "new" | "invitation_sent" | "connected" | "replied" | "needs_discovery" | "quoting" | "technical_discussion" | "won" | "paused" | "invalid";
+export type ReplyGoal = "了解需求" | "回答问题" | "推进报价" | "邀请会议" | "售后跟进" | "自定义";
+export type FollowUpTone = "简洁" | "专业" | "友好" | "谨慎";
 
 export interface StructuredField<T = string> {
   value: T | null;
@@ -163,6 +168,61 @@ export interface FollowUp {
   completed: boolean;
 }
 
+export interface ConversationMessage {
+  id: string;
+  taskId: string;
+  role: ConversationRole;
+  platform: ConversationPlatform;
+  content: string;
+  createdAt: string;
+  followUpGenerationId?: string;
+}
+
+export interface FollowUpGeneration {
+  id: string;
+  taskId: string;
+  sourceMessageIds: string[];
+  replyGoal: ReplyGoal;
+  customReplyGoal: string;
+  tone: FollowUpTone;
+  businessFacts: string;
+  englishReply: string;
+  chineseTranslation: string;
+  customerIntent: string;
+  nextAction: string;
+  missingInformation: string[];
+  riskWarnings: string[];
+  safeTransitionReplyEnglish: string;
+  safeTransitionReplyChinese: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FollowUpGenerationRequest {
+  taskId: string;
+  customer: Customer;
+  analysis: Pick<CustomerAnalysis, "mainBusiness" | "decisionInfluence" | "potentialApplications" | "recommendedAngle" | "uncertainties" | "conflicts">;
+  currentOutreach: string;
+  followUpStage: CustomerStage;
+  replyGoal: ReplyGoal;
+  customReplyGoal: string;
+  tone: FollowUpTone;
+  businessFacts: string;
+  messages: ConversationMessage[];
+  latestCustomerReply: string;
+}
+
+export interface FollowUpGenerationResponse {
+  replyEnglish: string;
+  replyChinese: string;
+  customerIntent: string;
+  nextAction: string;
+  missingInformation: string[];
+  riskWarnings: string[];
+  safeTransitionReplyEnglish: string;
+  safeTransitionReplyChinese: string;
+}
+
 export interface Task {
   id: string;
   customer: Customer;
@@ -178,6 +238,10 @@ export interface Task {
   followUpDate: string;
   notes: string;
   followUps: FollowUp[];
+  conversationMessages: ConversationMessage[];
+  followUpGenerations: FollowUpGeneration[];
+  followUpStage: CustomerStage;
+  lastContactAt: string;
 }
 
 export interface CompanyProfile {

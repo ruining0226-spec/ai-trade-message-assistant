@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { defaultCompanyProfile, defaultProducts } from "@/lib/mock/defaults";
 import { storageRepository } from "@/lib/storage/repository";
 import type { CompanyProfile, Product, Task } from "@/types";
@@ -10,10 +10,12 @@ interface AppDataValue {
   tasks: Task[];
   company: CompanyProfile;
   products: Product[];
-  upsertTask(task: Task): void;
-  deleteTask(id: string): void;
-  saveCompany(profile: CompanyProfile): void;
-  saveProducts(products: Product[]): void;
+  storageError: string;
+  clearStorageError(): void;
+  upsertTask(task: Task): boolean;
+  deleteTask(id: string): boolean;
+  saveCompany(profile: CompanyProfile): boolean;
+  saveProducts(products: Product[]): boolean;
 }
 
 const AppDataContext = createContext<AppDataValue | null>(null);
@@ -23,25 +25,48 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [company, setCompanyState] = useState(defaultCompanyProfile);
   const [products, setProductsState] = useState(defaultProducts);
+  const [storageError, setStorageError] = useState("");
+  const tasksRef = useRef<Task[]>([]);
+  const companyRef = useRef(defaultCompanyProfile);
+  const productsRef = useRef(defaultProducts);
 
   useEffect(() => {
+    const loadedTasks = storageRepository.getTasks();
+    const loadedCompany = storageRepository.getCompany();
+    const loadedProducts = storageRepository.getProducts();
+    tasksRef.current = loadedTasks; companyRef.current = loadedCompany; productsRef.current = loadedProducts;
     // Browser storage is an external system; hydrate it only after the client mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTasks(storageRepository.getTasks());
-    setCompanyState(storageRepository.getCompany());
-    setProductsState(storageRepository.getProducts());
+    setTasks(loadedTasks); setCompanyState(loadedCompany); setProductsState(loadedProducts);
+    setStorageError(storageRepository.consumeStorageError());
     setHydrated(true);
   }, []);
 
-  const upsertTask = useCallback((task: Task) => setTasks(current => {
+  const captureStorageError = useCallback(() => {
+    setStorageError(storageRepository.consumeStorageError() || "本地保存失败，请检查浏览器存储空间后重试。");
+  }, []);
+  const upsertTask = useCallback((task: Task) => {
+    const current = tasksRef.current;
     const next = current.some(item => item.id === task.id) ? current.map(item => item.id === task.id ? task : item) : [task, ...current];
-    storageRepository.saveTasks(next); return next;
-  }), []);
-  const deleteTask = useCallback((id: string) => setTasks(current => { const next = current.filter(item => item.id !== id); storageRepository.saveTasks(next); return next; }), []);
-  const saveCompany = useCallback((profile: CompanyProfile) => { setCompanyState(profile); storageRepository.saveCompany(profile); }, []);
-  const saveProducts = useCallback((items: Product[]) => { setProductsState(items); storageRepository.saveProducts(items); }, []);
+    if (!storageRepository.saveTasks(next)) { captureStorageError(); return false; }
+    tasksRef.current = next; setTasks(next); return true;
+  }, [captureStorageError]);
+  const deleteTask = useCallback((id: string) => {
+    const next = tasksRef.current.filter(item => item.id !== id);
+    if (!storageRepository.saveTasks(next)) { captureStorageError(); return false; }
+    tasksRef.current = next; setTasks(next); return true;
+  }, [captureStorageError]);
+  const saveCompany = useCallback((profile: CompanyProfile) => {
+    if (!storageRepository.saveCompany(profile)) { captureStorageError(); return false; }
+    companyRef.current = profile; setCompanyState(profile); return true;
+  }, [captureStorageError]);
+  const saveProducts = useCallback((items: Product[]) => {
+    if (!storageRepository.saveProducts(items)) { captureStorageError(); return false; }
+    productsRef.current = items; setProductsState(items); return true;
+  }, [captureStorageError]);
+  const clearStorageError = useCallback(() => setStorageError(""), []);
 
-  const value = useMemo(() => ({ hydrated, tasks, company, products, upsertTask, deleteTask, saveCompany, saveProducts }), [hydrated, tasks, company, products, upsertTask, deleteTask, saveCompany, saveProducts]);
+  const value = useMemo(() => ({ hydrated, tasks, company, products, storageError, clearStorageError, upsertTask, deleteTask, saveCompany, saveProducts }), [hydrated, tasks, company, products, storageError, clearStorageError, upsertTask, deleteTask, saveCompany, saveProducts]);
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
 }
 
