@@ -8,132 +8,172 @@ const productEnglish: Record<string, string> = {
   "整厂节能系统": "plant-wide compressed-air efficiency solutions",
 };
 const typeCodeFromLegacy: Record<Customer["customerType"], CustomerTypeCode> = {
-  经销商: "distributor", 代理商: "agent", 终端工厂: "end_user_factory", 设备集成商: "oem_integrator",
-  工程项目方: "oem_integrator", 服务商: "service_provider", 其他: "unknown", 无法判断: "unknown",
+  经销商: "distributor", 代理商: "agent", 终端工厂: "end_user_factory", 设备集成商: "system_integrator",
+  工程项目方: "system_integrator", "系统集成商/工程公司": "system_integrator", 服务商: "service_provider",
+  贸易商: "trader", "制造商/同行": "manufacturer_competitor", 行业联系人: "industry_contact",
+  其他: "unknown", 无法判断: "unknown",
 };
 
 export const countEnglishWords = (value: string) => value.trim().match(/[A-Za-z]+(?:[-'][A-Za-z]+)*/g)?.length || 0;
+export const countEnglishCharacters = (value: string) => [...value].length;
 
 function usableFact(field: StructuredField | undefined) {
-  return Boolean(field?.value && field.source === "screenshot" && field.confidence !== "low" && !field.needsReview);
+  return Boolean(field?.value && (field.source === "screenshot" || field.source === "user_confirmed") && field.confidence !== "low" && !field.needsReview);
 }
 
 function safeValue(value: string, field: StructuredField | undefined, fallback: string) {
   return usableFact(field) ? value.trim() || fallback : fallback;
 }
 
-function safeGreeting(customer: Customer, analysis: CustomerAnalysis) {
+function safeGreeting(customer: Customer, analysis: CustomerAnalysis, style: "letter" | "social" = "letter") {
   const name = safeValue(customer.name, analysis.structuredFields?.customerName, "");
-  return name ? `Dear ${name.split(/\s+/)[0]},` : "Hello,";
+  if (!name) return "Hello";
+  return `${style === "letter" ? "Dear" : "Hi"} ${name.split(/\s+/)[0]}`;
 }
 
 function safeContext(customer: Customer, analysis: CustomerAnalysis) {
   const company = safeValue(customer.companyName, analysis.structuredFields?.companyName, "your company");
-  const industry = safeValue(customer.industry, analysis.structuredFields?.industry, "industrial applications");
+  const industry = safeValue(customer.industry, analysis.structuredFields?.industry, "");
   const business = safeValue(analysis.mainBusiness, analysis.companyBusinessField, industry);
-  const typeCode = analysis.structuredFields?.customerType.value || typeCodeFromLegacy[customer.customerType];
+  const rawStructuredType = usableFact(analysis.structuredFields?.customerType) ? analysis.structuredFields?.customerType.value as string | null : null;
+  const structuredType = rawStructuredType === "oem_integrator" ? "system_integrator" : rawStructuredType as CustomerTypeCode | null;
+  const typeCode = structuredType || typeCodeFromLegacy[customer.customerType] || "unknown";
   return { company, industry, business, typeCode };
 }
 
 function angleFor(type: CustomerTypeCode) {
   switch (type) {
-    case "distributor": case "agent": return "broader product coverage and practical channel cooperation";
-    case "end_user_factory": return "energy efficiency, operating stability and maintenance priorities";
-    case "oem_integrator": return "specification fit and compressed-air equipment integration for future projects";
-    case "service_provider": return "equipment supply, spare-parts availability and service cooperation";
-    default: return "industrial compressed-air equipment could be relevant to your work";
+    case "distributor": case "agent": return "先了解当地市场、产品范围及销售服务能力，再逐步探讨合作，不涉及代理权或区域独家承诺";
+    case "end_user_factory": return "围绕应用、压力、排气量、电压、运行时间、空气品质和现有问题确认实际用气需求";
+    case "system_integrator": return "围绕项目需求、技术选型、系统配置和交付支持交流，不预设品牌代理意向";
+    case "service_provider": return "了解服务区域、客户群、现有品牌和备件需求，再判断设备、配件或技术支持机会";
+    case "trader": return "先确认实际产品范围、目标市场和业务角色，不预设其为授权经销商";
+    case "manufacturer_competitor": case "industry_contact": return "以行业和技术交流为主，不使用强推销话术，也不询问敏感商业数据";
+    default: return "先用一个简短问题确认对方业务身份或主要需求";
   }
 }
 
-function questionFor(type: CustomerTypeCode) {
+function invitationReason(type: CustomerTypeCode) {
   switch (type) {
-    case "distributor": case "agent": return "May I ask whether air-compressor products or channel cooperation would be relevant to your current portfolio?";
-    case "end_user_factory": return "May I ask whether improving compressed-air efficiency, stability or maintenance is relevant to any current operation?";
-    case "oem_integrator": return "May I ask whether your projects ever require air-compressor specifications or supporting equipment to be matched?";
-    case "service_provider": return "May I ask whether equipment supply, spare parts or service cooperation would be useful to your team?";
-    default: return "May I ask whether you would be open to a short introduction to our industrial air-compressor range?";
+    case "distributor": case "agent": return "exchange perspectives on industrial compressed-air markets";
+    case "end_user_factory": return "exchange practical ideas on compressed-air applications";
+    case "system_integrator": return "exchange views on compressed-air system integration";
+    case "service_provider": return "exchange practical equipment and service perspectives";
+    case "manufacturer_competitor": case "industry_contact": return "exchange technical and industry perspectives";
+    case "trader": return "learn more about each other's industrial equipment focus";
+    default: return "connect for a brief exchange on industrial compressed air";
   }
 }
 
-function angleZhFor(type: CustomerTypeCode) {
-  switch (type) {
-    case "distributor": case "agent": return "拓展产品覆盖和开展渠道合作";
-    case "end_user_factory": return "节能、稳定运行和维护重点";
-    case "oem_integrator": return "未来项目的规格适配和压缩空气设备配套";
-    case "service_provider": return "设备供应、备件和服务合作";
-    default: return "工业压缩空气设备是否可能与贵公司的工作相关";
-  }
-}
-
-function localEmail(customer: Customer, analysis: CustomerAnalysis, product: string, productZh: string) {
+function createLinkedInInvitation(customer: Customer, analysis: CustomerAnalysis) {
   const { industry, typeCode } = safeContext(customer, analysis);
-  const greeting = safeGreeting(customer, analysis);
-  const angle = angleFor(typeCode);
-  const question = questionFor(typeCode);
-  const subject = typeCode === "unknown" ? "A brief compressed-air introduction" : "Exploring compressed-air cooperation";
-  const english = `${greeting}\n\nI came across your profile and noticed your work in ${industry}. We manufacture ${product} for industrial applications. Based on the information available, I would like to explore whether ${angle} could be relevant to your business. We do not want to assume your current requirements. ${question} If this is relevant, I would be glad to share a concise product introduction and learn more about your priorities, preferred applications and next steps.\n\nBest regards,\n[Your Name]`;
-  const chinese = `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n我了解到您从事${industry}相关工作。我们生产面向工业应用的${productZh}。根据目前有限的信息，我想了解${angleZhFor(typeCode)}是否可能与贵公司的业务相关。我们不希望预设您当前的需求，因此想先请教这一方向是否值得进一步交流。如果相关，我很乐意发送一份简明的产品介绍，并进一步了解贵公司的重点、应用场景和后续安排。\n\n祝好！\n[您的姓名]`;
-  return { subject, subjectZh: typeCode === "unknown" ? "压缩空气产品简要介绍" : "探讨压缩空气合作", english, chinese };
+  const greeting = safeGreeting(customer, analysis, "social");
+  const groundedOpening = industry ? `Your work in ${industry} caught my attention.` : "We both work around industrial markets.";
+  const english = `${greeting}, ${groundedOpening} I work with compressed-air equipment and would value the chance to ${invitationReason(typeCode)}. Open to connecting?`;
+  const chinese = industry
+    ? `${greeting.replace(/^Hi /, "")}，您好！您在${industry}领域的工作引起了我的关注。我从事压缩空气设备，希望就相关行业话题做简短交流。方便建立联系吗？`
+    : `${greeting.replace(/^Hi /, "")}，您好！我们都关注工业市场。我从事压缩空气设备，希望就相关行业话题做简短交流。方便建立联系吗？`;
+  return { english: english.slice(0, 300), chinese };
+}
+
+function firstOutreach(customer: Customer, analysis: CustomerAnalysis, product: string, productZh: string) {
+  const { industry, typeCode } = safeContext(customer, analysis);
+  const greeting = `${safeGreeting(customer, analysis)},`;
+  const groundedOpening = industry ? `Your work in ${industry} is the reason I am reaching out.` : "I am reaching out to understand whether compressed-air topics are relevant to your work.";
+  const intro = `My team works with ${product} for industrial applications.`;
+  const introZh = `我们团队提供面向工业应用的${productZh}。`;
+  switch (typeCode) {
+    case "distributor": case "agent": return {
+      subject: "A practical compressed-air market conversation", subjectZh: "压缩空气市场交流",
+      english: `${greeting}\n\n${groundedOpening} ${intro} I would first like to understand your local market focus, current product scope, and whether your team supports customers after delivery. If there is a sensible fit, we can explore cooperation step by step without making assumptions about representation or exclusivity. Which compressed-air customer segment is most relevant to your business today?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想了解压缩空气业务是否与您的工作相关。"}${introZh}我希望先了解贵公司的当地市场重点、现有产品范围，以及团队是否提供交付后的客户支持。如果方向合适，我们可以逐步探讨合作，但不会预设代理或独家安排。请问目前哪类压缩空气客户与贵公司的业务最相关？\n\n祝好！\n[您的姓名]`,
+    };
+    case "end_user_factory": return {
+      subject: "A question about your compressed-air application", subjectZh: "关于压缩空气应用的简短问题",
+      english: `${greeting}\n\n${groundedOpening} ${intro} Rather than assume there is a purchase plan, I would like to understand the application first. Pressure, required flow, voltage, operating hours, air-quality requirements, and any current reliability or maintenance issue would determine whether this direction is relevant. Is there one compressed-air challenge your team is currently evaluating, or would a short application checklist be useful?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想了解压缩空气业务是否与您的工作相关。"}${introZh}我不想预设贵公司已有采购计划，因此希望先了解应用。压力、排气量、电压、运行时间、空气品质要求，以及现有的可靠性或维护问题，都会影响这一方向是否合适。请问团队目前是否正在评估某一个压缩空气问题，或者一份简短的应用信息清单是否有帮助？\n\n祝好！\n[您的姓名]`,
+    };
+    case "system_integrator": return {
+      subject: "Compressed-air support for engineering projects", subjectZh: "工程项目中的压缩空气支持",
+      english: `${greeting}\n\n${groundedOpening} ${intro} For engineering work, our useful role is usually to support specification matching, system configuration, and technical clarification rather than assume a distribution relationship. We can review a defined requirement and identify what still needs engineering confirmation before any recommendation. Do your current or upcoming projects include compressed-air equipment that requires technical selection or integration support?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想了解压缩空气业务是否与您的工作相关。"}${introZh}对于工程项目，我们更适合提供规格匹配、系统配置和技术澄清支持，而不会预设经销合作关系。我们可以根据明确需求进行审阅，并在推荐前指出仍需工程确认的信息。请问贵公司当前或后续项目是否包含需要技术选型或集成支持的压缩空气设备？\n\n祝好！\n[您的姓名]`,
+    };
+    case "service_provider": return {
+      subject: "Equipment and service support discussion", subjectZh: "设备与服务支持交流",
+      english: `${greeting}\n\n${groundedOpening} ${intro} I would like to understand the service side before suggesting anything: the area you cover, the customer groups you support, the brands commonly encountered, and whether equipment, spare parts, or technical support is the more relevant topic. We would confirm availability and terms separately rather than promise them in an initial message. Which of those areas is closest to your current work?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想了解压缩空气业务是否与您的工作相关。"}${introZh}在提出建议前，我希望先了解服务情况，包括覆盖区域、服务的客户群、常见品牌，以及设备、备件或技术支持中哪一项更相关。供货情况和条款需要另行确认，不会在首次沟通中承诺。请问其中哪一项最接近贵公司目前的工作？\n\n祝好！\n[您的姓名]`,
+    };
+    case "manufacturer_competitor": case "industry_contact": return {
+      subject: "An industry exchange on compressed air", subjectZh: "压缩空气行业交流",
+      english: `${greeting}\n\n${groundedOpening} I work in the compressed-air equipment field and am reaching out for an industry exchange, not a standard sales pitch. It could be useful to compare general perspectives on applications, system design, and the technical questions customers are raising, while avoiding confidential commercial information. Would you be open to a brief conversation about one technical or market topic that is relevant to your work?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想与您就压缩空气行业进行交流。"}我从事压缩空气设备领域，这次联系是希望进行行业交流，而不是发送常规销售推介。我们可以讨论应用、系统设计及客户关注的技术问题，同时避免涉及机密商业信息。请问您是否愿意就与工作相关的一个技术或市场话题做简短交流？\n\n祝好！\n[您的姓名]`,
+    };
+    case "trader": return {
+      subject: "Understanding your industrial equipment focus", subjectZh: "了解贵公司的工业设备方向",
+      english: `${greeting}\n\n${groundedOpening} ${intro} Before discussing products, I would like to understand your actual role, the equipment categories you handle, and the markets you serve. That will help avoid treating a general trading business as an authorized distributor or assuming a need that has not been confirmed. Is compressed-air equipment part of your current product scope, or is another industrial category more central to your work?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n${industry ? `您在${industry}领域的工作是我联系您的原因。` : "我想了解贵公司的工业设备业务方向。"}${introZh}在讨论产品前，我希望先了解贵公司的实际角色、经营的设备类别和服务市场，避免把一般贸易业务擅自称为授权经销商，也避免预设尚未确认的需求。请问压缩空气设备是否属于贵公司现有产品范围，还是其他工业品类更核心？\n\n祝好！\n[您的姓名]`,
+    };
+    default: return {
+      subject: "A brief compressed-air introduction", subjectZh: "压缩空气业务简要介绍",
+      english: `${greeting}\n\nI am reaching out because we both work around industrial markets, although the available information does not clearly show your business role or current needs. My team works with compressed-air equipment for industrial applications. I do not want to assume that you are a buyer, distributor, or project partner. A short answer will help me keep any future information relevant and avoid an unnecessary sales message. Would you be open to sharing whether your work is closer to equipment sales, factory use, engineering projects, service, or another area?\n\nBest regards,\n[Your Name]`,
+      chinese: `${greeting === "Hello," ? "您好！" : `${customer.name.split(/\s+/)[0]}，您好！`}\n\n我联系您是因为我们都关注工业市场，但现有资料无法明确显示您的业务身份或当前需求。我们团队从事工业压缩空气设备。我不希望擅自把您视为采购方、经销商或项目合作伙伴。简单回复即可帮助我确保后续信息相关，并避免不必要的销售消息。方便说明您的工作更接近设备销售、工厂应用、工程项目、服务，还是其他领域吗？\n\n祝好！\n[您的姓名]`,
+    };
+  }
 }
 
 function safeModelOutreach(customer: Customer, analysis: CustomerAnalysis) {
   const outreach = analysis.generatedOutreach;
-  if (!outreach || countEnglishWords(outreach.bodyEn) < 80 || countEnglishWords(outreach.bodyEn) > 120 || !outreach.bodyZh) return null;
+  if (!outreach || countEnglishWords(outreach.bodyEn) < 80 || countEnglishWords(outreach.bodyEn) > 160 || !outreach.bodyZh) return null;
   const unsafeValues = [analysis.structuredFields?.customerName, analysis.structuredFields?.companyName]
-    .filter(field => field?.value && !usableFact(field))
-    .map(field => field?.value?.toLowerCase());
+    .filter(field => field?.value && !usableFact(field)).map(field => field?.value?.toLowerCase());
   const body = outreach.bodyEn.toLowerCase();
   if (unsafeValues.some(value => value && body.includes(value))) return null;
-  if (/i know you are looking for|i noticed you need|i understand you are purchasing/i.test(outreach.bodyEn)) return null;
+  if (/i know you are looking for|i noticed you need|i understand you are purchasing|lowest price|exclusive (?:agency|rights)|guaranteed delivery/i.test(outreach.bodyEn)) return null;
   return outreach;
 }
 
-const message = (id: string, title: string, titleEn: string, english: string, chinese: string): ChannelMessage => ({ id, title, titleEn, english, chinese });
+const message = (idValue: string, title: string, titleEn: string, english: string, chinese: string): ChannelMessage => ({ id: idValue, title, titleEn, english, chinese });
 
 function createChannelMessages(customer: Customer, analysis: CustomerAnalysis, config: GenerationConfig): ChannelMessage[] {
   const product = productEnglish[config.product] || "industrial air compressors";
-  const { company, industry, typeCode } = safeContext(customer, analysis);
-  const greeting = safeGreeting(customer, analysis).replace(/^Dear /, "Hi ").replace(/,$/, "");
-  const question = questionFor(typeCode);
+  const local = firstOutreach(customer, analysis, product, config.product);
   if (config.channel === "Email") {
-    const fallback = localEmail(customer, analysis, product, config.product);
     const generated = safeModelOutreach(customer, analysis);
-    const subject = generated?.subjectEn || fallback.subject;
-    const body = generated?.bodyEn || fallback.english;
-    const translation = generated?.bodyZh || fallback.chinese;
     return [
-      message("email-subject", "Email 主题", "Email Subject", subject, generated?.subjectZh || fallback.subjectZh),
-      message("email-body", "第一封开发邮件", "First Outreach Email", body, translation),
-      message("email-follow-up", "建议的简短跟进邮件", "Suggested Short Follow-up Email",
-        `Hello,\n\nI wanted to follow up briefly on my earlier note about compressed-air cooperation. Would this be relevant to any current or upcoming work at ${company}?\n\nBest regards,\n[Your Name]`,
-        `您好！\n\n想简短跟进一下之前关于压缩空气合作的邮件。请问这一方向是否与贵公司当前或后续工作相关？\n\n祝好！\n[您的姓名]`),
+      message("email-subject", "Email 主题", "Email Subject", generated?.subjectEn || local.subject, generated?.subjectZh || local.subjectZh),
+      message("email-body", "第一封开发邮件", "First Outreach Email", generated?.bodyEn || local.english, generated?.bodyZh || local.chinese),
+      message("email-follow-up", "建议的简短跟进邮件", "Suggested Short Follow-up Email", "Hello,\n\nI am following up briefly on my earlier message. If compressed-air equipment is not relevant now, no action is needed. If it is worth discussing, which single application or business area should we focus on first?\n\nBest regards,\n[Your Name]", "您好！\n\n想简短跟进之前的消息。如果压缩空气设备目前不相关，无需处理；如果值得交流，请问我们最适合先关注哪一个应用或业务方向？\n\n祝好！\n[您的姓名]"),
     ];
   }
   if (config.channel === "Facebook") return [
-    message("facebook-first-contact", "Facebook 首次联系消息", "Facebook First Contact Message", `${greeting}, I came across your work in ${industry}. I work with industrial compressed-air equipment and would be pleased to connect.`, `您好！我了解到您从事${industry}相关工作。我从事工业压缩空气设备，希望有机会与您认识。`),
-    message("facebook-follow-up", "对方回应或建立联系后的跟进消息", "Facebook Follow-up Message", `Thanks for getting back to me. ${question}`, `感谢回复。我想先了解工业压缩空气设备或相关合作是否与贵公司的业务有关。`),
+    message("facebook-first-contact", "Facebook 首次联系消息", "Facebook First Contact Message", local.english, local.chinese),
+    message("facebook-follow-up", "对方回应或建立联系后的跟进消息", "Facebook Follow-up Message", "Thank you for replying. Which part of compressed-air equipment or applications would be most useful to discuss first?", "感谢回复。请问压缩空气设备或应用中，哪一方面最值得先交流？"),
   ];
   if (config.channel === "WhatsApp") return [
-    message("whatsapp-first-contact", "WhatsApp 首次联系消息", "WhatsApp First Contact Message", `${greeting}, I came across your work in ${industry}. I work with industrial air compressors. Would it be alright to ask one brief question?`, `您好！我了解到您从事${industry}相关工作。我从事工业空压机业务，方便请教一个简短问题吗？`),
-    message("whatsapp-follow-up", "对方回复后的跟进消息", "WhatsApp Follow-up Message", `Thank you. ${question}`, `谢谢。想请教工业空压机或相关合作是否与贵公司的业务有关？`),
+    message("whatsapp-first-contact", "WhatsApp 首次联系消息", "WhatsApp First Contact Message", local.english, local.chinese),
+    message("whatsapp-follow-up", "对方回复后的跟进消息", "WhatsApp Follow-up Message", "Thank you. Which one compressed-air topic would be most relevant to your work?", "谢谢。请问哪一个压缩空气话题与您的工作最相关？"),
   ];
+  const invitation = createLinkedInInvitation(customer, analysis);
   return [
-    message("linkedin-request", "LinkedIn 连接邀请", "LinkedIn Connection Request", `${greeting}, I came across your work in ${industry}. I work with industrial compressed-air solutions and would be pleased to connect and exchange practical industry perspectives.`, `您好！我了解到您从事${industry}相关工作。我从事工业压缩空气解决方案，希望与您建立联系并交流行业经验。`),
-    message("linkedin-first-message", "连接通过后的第一封消息", "First Message After Connecting", `${greeting}, thank you for connecting. We manufacture ${product} for industrial applications. ${question}`, `您好，感谢通过好友申请。我们生产面向工业应用的${config.product}。想请教这一产品或相关合作是否与贵公司的业务有关？`),
+    message("linkedin-request", "LinkedIn 连接邀请", "LinkedIn Connection Request", invitation.english, invitation.chinese),
+    message("linkedin-first-message", "连接通过后的第一封消息", "First Message After Connecting", local.english, local.chinese),
   ];
 }
 
 export function createMessageContent(customer: Customer, analysis: CustomerAnalysis, config: GenerationConfig): MessageContent {
   const messages = createChannelMessages(customer, analysis, config);
   const { typeCode } = safeContext(customer, analysis);
+  const confirmedFacts = analysis.confirmedFacts?.length ? analysis.confirmedFacts : ["当前仅使用人工确认或高/中置信度截图事实。"];
+  const reasonableInferences = analysis.reasonableInferences?.length ? analysis.reasonableInferences : analysis.inferences?.map(item => `${item.content}（依据：${item.basis}）`) || [];
+  const unknownInformation = analysis.unknownInformation?.length ? analysis.unknownInformation : [analysis.uncertainties || "客户的具体需求与采购计划尚未确认。"];
   return {
-    identityAnalysis: `${customer.name || "客户姓名待确认"}；${customer.title || "职位待确认"}；${customer.companyName || "公司名称待确认"}。`,
-    businessConnection: analysis.inferences?.length ? analysis.inferences.map(item => `${item.content}（依据：${item.basis}）`).join("；") : "截图证据不足，暂不判断客户的压缩空气需求。",
+    identityAnalysis: `客户类型：${typeCode}\n已确认事实：${confirmedFacts.join("；")}\n合理推断：${reasonableInferences.join("；") || "无"}\n未知信息：${unknownInformation.join("；")}`,
+    businessConnection: reasonableInferences.length ? reasonableInferences.join("；") : "现有资料不足以确认客户的压缩空气需求。",
     recommendedAngle: analysis.recommendedAngle || angleFor(typeCode),
     invitationEn: messages[0]?.english || "", firstMessageEn: messages[1]?.english || "",
     invitationZh: messages[0]?.chinese || "", firstMessageZh: messages[1]?.chinese || "",
-    personalizationBasis: `客户类型：${typeCode}；仅使用通过置信度检查的截图事实；推广产品：${config.product}。`,
-    uncertaintyNotice: analysis.uncertainties || "低置信度和推测信息不得作为确定事实写入开发信。",
+    personalizationBasis: `客户类型：${typeCode}；仅使用通过置信度检查的当前客户事实；推广方向：${config.product}。`,
+    uncertaintyNotice: unknownInformation.join("；"),
     messages,
   };
 }

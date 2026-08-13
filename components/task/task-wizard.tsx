@@ -13,6 +13,7 @@ import { getLastContactAt, normalizeConversationMessages, normalizeFollowUpGener
 import { applyManualConfirmation, CONFIRMATION_NEXT_STEP, CUSTOMER_DETAILS_DEFAULT_OPEN, getConfirmationRisks, getConfirmationStatus, getCustomerSummary, setConfirmationUnknown, type ConfirmationFieldKey } from "@/lib/customer/confirmation";
 import { assertPreparedUpload, ClientImageError, postPreparedImages, prepareClientImages, toPersistedImageMetadata } from "@/lib/vision/client-images";
 import { MAX_IMAGE_COUNT, MAX_PREPARED_IMAGE_BYTES, MAX_PREPARED_TOTAL_BYTES } from "@/lib/vision/limits";
+import { VisionConfigCheckController } from "@/lib/vision/config-client";
 import { defaultConfig, demoAnalysis, demoCustomer } from "@/lib/mock/defaults";
 import { createId } from "@/lib/utils";
 import type { AnalysisSource, Confidence, Customer, CustomerAnalysis, CustomerAnalysisResponse, CustomerType, CustomerTypeCode, FieldSource, GenerationConfig, MessageContent, MessageOptimizationResponse, MessageVersion, StructuredField, Task, TaskImage } from "@/types";
@@ -21,13 +22,12 @@ import type { QuickOptimizationLabel } from "@/lib/message/optimization";
 const steps = ["上传截图", "确认客户资料", "配置开发信", "生成与编辑"];
 const fieldClass = "field";
 type AnalysisMode = "checking" | "volcengine" | "mock";
-const CONFIG_CHECK_TIMEOUT_MS = 8_000;
 const customerTypeLabels: Record<CustomerTypeCode, CustomerType> = {
-  distributor: "经销商", agent: "代理商", end_user_factory: "终端工厂", oem_integrator: "设备集成商",
-  service_provider: "服务商", unknown: "无法判断",
+  distributor: "经销商", agent: "代理商", end_user_factory: "终端工厂", system_integrator: "系统集成商/工程公司",
+  service_provider: "服务商", trader: "贸易商", manufacturer_competitor: "制造商/同行", industry_contact: "行业联系人", unknown: "无法判断",
 };
 const confidenceLabels: Record<Confidence, string> = { high: "高置信度", medium: "中等置信度", low: "低置信度" };
-const sourceLabels: Record<FieldSource, string> = { screenshot: "截图事实", inference: "AI推测", unknown: "无法确认" };
+const sourceLabels: Record<FieldSource, string> = { screenshot: "截图事实", user_confirmed: "人工确认", inference: "AI推测", unknown: "无法确认" };
 
 export function TaskWizard({ taskId, initialFollowUp = false }: { taskId?: string; initialFollowUp?: boolean }) {
   const router = useRouter();
@@ -58,56 +58,35 @@ export function TaskWizard({ taskId, initialFollowUp = false }: { taskId?: strin
   const [toast, setToast] = useState("");
   const loaded = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
-  const configCheckAbortRef = useRef<AbortController | null>(null);
-  const configCheckRunRef = useRef(0);
+  const configCheckerRef = useRef<VisionConfigCheckController | null>(null);
 
   const checkVisionConfig = useCallback(async () => {
-    const runId = ++configCheckRunRef.current;
-    configCheckAbortRef.current?.abort();
-    const controller = new AbortController();
-    configCheckAbortRef.current = controller;
+    const checker = configCheckerRef.current || new VisionConfigCheckController();
+    configCheckerRef.current = checker;
     setConfigChecking(true);
     setConfigCheckFailed(false);
     setAnalysisMode("checking");
     setModeMessage("正在检查视觉 AI 配置…");
-    const timeout = window.setTimeout(() => controller.abort(), CONFIG_CHECK_TIMEOUT_MS);
+    let shouldSettle = true;
 
     try {
-      const response = await fetch("/api/analyze-customer", {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`配置接口返回 ${response.status}`);
-      const result: unknown = await response.json();
-      if (!result || typeof result !== "object" || !("mode" in result) || (result.mode !== "volcengine" && result.mode !== "mock")) {
-        throw new Error("配置接口返回格式无效");
+      const result = await checker.check();
+      if (result.kind === "stale") { shouldSettle = false; return; }
+      if (result.kind === "error") {
+        setAnalysisMode("mock");
+        setConfigCheckFailed(true);
+        setModeMessage("暂时无法确认AI配置，请重新检查或查看本地服务状态。");
+        return;
       }
-      if (configCheckRunRef.current !== runId) return;
-      setAnalysisMode(result.mode);
-      setModeMessage(
-        "message" in result && typeof result.message === "string"
-          ? result.message
-          : result.mode === "volcengine"
-            ? "已配置火山方舟视觉 AI。"
-            : "尚未配置豆包/火山引擎API，当前使用演示分析。",
-      );
-    } catch (caught) {
-      if (configCheckRunRef.current !== runId) return;
-      const timedOut = controller.signal.aborted;
+      setAnalysisMode(result.status.mode);
+      setModeMessage(result.status.configured ? "已配置火山方舟视觉 AI。" : "尚未配置豆包/火山引擎API，当前使用演示分析。");
+    } catch {
       setAnalysisMode("mock");
       setConfigCheckFailed(true);
-      setModeMessage(timedOut
-        ? "视觉 AI 配置检查超时，当前已切换为演示模式。请确认使用 localhost:3000 访问或稍后重新检查。"
-        : "无法读取视觉 AI 配置，当前已切换为演示模式。可继续使用模拟分析或重新检查。");
-      if (!(caught instanceof DOMException && caught.name === "AbortError")) console.warn("Vision configuration check failed.");
+      setModeMessage("暂时无法确认AI配置，请重新检查或查看本地服务状态。");
+      console.warn("Vision configuration check failed.");
     } finally {
-      window.clearTimeout(timeout);
-      if (configCheckRunRef.current === runId) {
-        configCheckAbortRef.current = null;
-        setConfigChecking(false);
-      }
+      if (shouldSettle) setConfigChecking(false);
     }
   }, []);
 
@@ -115,8 +94,7 @@ export function TaskWizard({ taskId, initialFollowUp = false }: { taskId?: strin
     const startTimer = window.setTimeout(() => { void checkVisionConfig(); }, 0);
     return () => {
       window.clearTimeout(startTimer);
-      configCheckRunRef.current += 1;
-      configCheckAbortRef.current?.abort();
+      configCheckerRef.current?.cancel();
       abortRef.current?.abort();
     };
   }, [checkVisionConfig]);
@@ -183,6 +161,9 @@ export function TaskWizard({ taskId, initialFollowUp = false }: { taskId?: strin
       companyBusinessField: result.companyBusiness,
       decisionInfluenceField: result.decisionInfluence,
       inferences: result.inferences,
+      confirmedFacts: result.confirmedFacts,
+      reasonableInferences: result.reasonableInferences,
+      unknownInformation: result.unknownInformation,
       generatedOutreach: result.outreach,
     });
     setAnalysisSource(source); setAnalysisStage("分析完成"); setAnalysisFailed(false); setStep(2);
@@ -380,9 +361,9 @@ function ConfirmStep({ customer, analysis, analysisSource, setCustomer, setAnaly
   const saveManual = (key: Exclude<typeof manualField, null>) => { const nextState = applyManualConfirmation(customer, analysis, key, manualValue); setCustomer(nextState.customer); setAnalysis(nextState.analysis); resolve(key); };
   return <section className="card p-5 md:p-7"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><h2 className="section-title">确认客户资料</h2><p className="mt-1 text-sm muted">快速确认会影响称呼和沟通方向的信息，其余详情可按需展开。</p></div><span className={`badge ${analysisSource !== "volcengine" ? "badge-warn" : ""}`}>{analysisSource === "volcengine" ? "来源：火山方舟" : analysisSource === "legacy" ? "来源：旧任务" : "来源：演示数据"}</span></div>
     <div className="rounded-2xl border border-[#dce5e1] bg-[#fafcfc] p-5"><div className="text-xl font-black text-[#173d32]">{summary.name}</div><div className="mt-1 font-bold text-[#3f554d]">{summary.role}</div><div className="mt-1 text-sm text-[#60706a]">{summary.companyAndRegion}</div><div className="mt-4 grid gap-2 text-sm md:grid-cols-2"><div><span className="font-bold">客户类型：</span>{summary.customerType}</div><div><span className="font-bold">建议方向：</span>{summary.direction}</div></div><div className={`mt-4 text-sm font-bold ${status.canContinue && !risks.length ? "text-[#087a5b]" : "text-[#9a6530]"}`}>{status.label}</div></div>
-    <div className="mt-5 rounded-xl border border-[#dce5e1] p-4"><h3 className="font-black">需要确认</h3>{risks.length ? <div className="mt-3 space-y-3">{risks.map(risk => <div className="rounded-xl bg-[#fafcfc] p-3" key={risk.key}><div className="flex flex-wrap items-start justify-between gap-2"><div><div className="text-sm font-bold">{risk.label}：{risk.value}</div><div className="mt-1 text-xs leading-5 text-[#60706a]">{risk.reason}</div></div><div className="flex flex-wrap gap-2"><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => resolve(risk.key)}>保留当前内容</button><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => setUnknown(risk.key)}>设为未知</button><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => { setManualField(risk.key); setManualValue(customer[risk.key]); }}>手动修改</button></div></div>{manualField === risk.key && <div className="mt-3 flex flex-col gap-2 sm:flex-row">{risk.key === "customerType" ? <select className={fieldClass} value={manualValue} onChange={event => setManualValue(event.target.value)}>{["经销商", "代理商", "终端工厂", "设备集成商", "工程项目方", "服务商", "其他", "无法判断"].map(value => <option key={value}>{value}</option>)}</select> : <input className={fieldClass} value={manualValue} placeholder={`请输入${risk.label}`} onChange={event => setManualValue(event.target.value)} />}<button className="btn-primary whitespace-nowrap" onClick={() => saveManual(risk.key)}>确认修改</button></div>}</div>)}</div> : <p className="mt-2 text-sm text-[#53645e]">未发现需要特别确认的信息，可以直接生成开发信。</p>}</div>
+    <div className="mt-5 rounded-xl border border-[#dce5e1] p-4"><h3 className="font-black">需要确认</h3>{risks.length ? <div className="mt-3 space-y-3">{risks.map(risk => <div className="rounded-xl bg-[#fafcfc] p-3" key={risk.key}><div className="flex flex-wrap items-start justify-between gap-2"><div><div className="text-sm font-bold">{risk.label}：{risk.value}</div><div className="mt-1 text-xs leading-5 text-[#60706a]">{risk.reason}</div></div><div className="flex flex-wrap gap-2"><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => resolve(risk.key)}>保留当前内容</button><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => setUnknown(risk.key)}>设为未知</button><button className="btn-secondary !min-h-8 !px-3 text-xs" onClick={() => { setManualField(risk.key); setManualValue(customer[risk.key]); }}>手动修改</button></div></div>{manualField === risk.key && <div className="mt-3 flex flex-col gap-2 sm:flex-row">{risk.key === "customerType" ? <select className={fieldClass} value={manualValue} onChange={event => setManualValue(event.target.value)}>{["经销商", "代理商", "终端工厂", "系统集成商/工程公司", "服务商", "贸易商", "制造商/同行", "行业联系人", "无法判断", "设备集成商", "工程项目方", "其他"].map(value => <option key={value}>{value}</option>)}</select> : <input className={fieldClass} value={manualValue} placeholder={`请输入${risk.label}`} onChange={event => setManualValue(event.target.value)} />}<button className="btn-primary whitespace-nowrap" onClick={() => saveManual(risk.key)}>确认修改</button></div>}</div>)}</div> : <p className="mt-2 text-sm text-[#53645e]">未发现需要特别确认的信息，可以直接生成开发信。</p>}</div>
     <details open={CUSTOMER_DETAILS_DEFAULT_OPEN} className="mt-5 rounded-xl border border-[#dce5e1] bg-[#fafcfc] p-4"><summary className="cursor-pointer font-black">查看全部识别与分析详情</summary><div className="mt-5 grid gap-5 md:grid-cols-2">{customerFields.map(([key, metadataKey, label, important]) => <label key={key}><span className="label">{label} {important && <em className="not-italic text-[#b45432]">· 重点信息</em>}</span><input className={fieldClass} placeholder="AI未能从截图中确认，请手动填写" value={customer[key]} onChange={event => { const next = applyManualConfirmation(customer, analysis, key as ConfirmationFieldKey, event.target.value); setCustomer(next.customer); setAnalysis(next.analysis); }} /><FieldStatus field={analysis.structuredFields?.[metadataKey] as StructuredField<string> | undefined} /></label>)}
-      <label><span className="label">客户类型</span><select className={fieldClass} value={customer.customerType} onChange={event => { const next = applyManualConfirmation(customer, analysis, "customerType", event.target.value); setCustomer(next.customer); setAnalysis(next.analysis); }}>{["经销商", "代理商", "终端工厂", "设备集成商", "工程项目方", "服务商", "其他", "无法判断"].map(value => <option key={value}>{value}</option>)}</select><FieldStatus field={analysis.structuredFields?.customerType} /></label>
+      <label><span className="label">客户类型</span><select className={fieldClass} value={customer.customerType} onChange={event => { const next = applyManualConfirmation(customer, analysis, "customerType", event.target.value); setCustomer(next.customer); setAnalysis(next.analysis); }}>{["经销商", "代理商", "终端工厂", "系统集成商/工程公司", "服务商", "贸易商", "制造商/同行", "行业联系人", "无法判断", "设备集成商", "工程项目方", "其他"].map(value => <option key={value}>{value}</option>)}</select><FieldStatus field={analysis.structuredFields?.customerType} /></label>
       <label><span className="label">决策影响力</span><select className={fieldClass} value={analysis.decisionInfluence} onChange={event => setAnalysis({ ...analysis, decisionInfluence: event.target.value as CustomerAnalysis["decisionInfluence"], generatedOutreach: undefined })}>{["高", "中", "低", "无法判断"].map(value => <option key={value}>{value}</option>)}</select><FieldStatus field={analysis.decisionInfluenceField as StructuredField<string> | undefined} /></label>
       <label className="md:col-span-2"><span className="label">公司主要业务</span><textarea rows={3} className={fieldClass} placeholder="AI未能从截图中确认，请手动填写" value={analysis.mainBusiness} onChange={event => setAnalysis({ ...analysis, mainBusiness: event.target.value, generatedOutreach: undefined })} /><FieldStatus field={analysis.companyBusinessField} /></label>
       <label className="md:col-span-2"><span className="label">潜在压缩空气应用</span><textarea rows={3} className={fieldClass} value={analysis.potentialApplications} onChange={event => setAnalysis({ ...analysis, potentialApplications: event.target.value, generatedOutreach: undefined })} /></label>
@@ -399,7 +380,7 @@ function ConfirmStep({ customer, analysis, analysisSource, setCustomer, setAnaly
 
 function ConfigStep({ config, setConfig, busy, back, generate }: { config: GenerationConfig; setConfig(v: GenerationConfig): void; busy: boolean; back(): void; generate(): void }) {
   const selects: Array<[keyof GenerationConfig, string, string[]]> = [
-    ["channel", "联系渠道", ["LinkedIn", "Facebook", "Email", "WhatsApp"]], ["purpose", "开发目的", ["初次认识", "寻找经销商", "推荐产品", "项目合作", "二次跟进"]], ["customerType", "客户类型", ["经销商", "代理商", "终端工厂", "设备集成商", "工程项目方", "服务商", "其他", "无法判断"]], ["tone", "语气", ["友好简短", "专业正式", "顾问式"]], ["length", "长度", ["极简", "标准", "详细"]], ["language", "输出语言", ["英文", "中英对照"]], ["product", "推广产品", ["永磁变频螺杆空压机", "两级压缩空压机", "无油空压机", "整厂节能系统"]],
+    ["channel", "联系渠道", ["LinkedIn", "Facebook", "Email", "WhatsApp"]], ["purpose", "开发目的", ["初次认识", "寻找经销商", "推荐产品", "项目合作", "二次跟进"]], ["customerType", "客户类型", ["经销商", "代理商", "终端工厂", "系统集成商/工程公司", "服务商", "贸易商", "制造商/同行", "行业联系人", "无法判断", "设备集成商", "工程项目方", "其他"]], ["tone", "语气", ["友好简短", "专业正式", "顾问式"]], ["length", "长度", ["极简", "标准", "详细"]], ["language", "输出语言", ["英文", "中英对照"]], ["product", "推广产品", ["永磁变频螺杆空压机", "两级压缩空压机", "无油空压机", "整厂节能系统"]],
   ];
   return <section className="card p-5 md:p-7"><div className="mb-6"><h2 className="section-title">配置开发信</h2><p className="mt-1 text-sm muted">这些条件会记录到任务中，并影响模拟生成结果。</p></div><div className="grid gap-5 md:grid-cols-2">{selects.map(([key, label, options]) => <label key={key}><span className="label">{label}</span><select className={fieldClass} value={config[key]} onChange={e => setConfig({ ...config, [key]: e.target.value })}>{options.map(x => <option key={x}>{x}</option>)}</select></label>)}<label className="md:col-span-2"><span className="label">补充说明</span><textarea rows={4} className={fieldClass} placeholder="例如：避免谈价格，先了解对方是否负责项目配套…" value={config.notes} onChange={e => setConfig({ ...config, notes: e.target.value })} /></label></div><div className="mt-7 flex justify-between"><button className="btn-secondary" onClick={back}>上一步</button><button className="btn-primary min-w-36" disabled={busy} onClick={generate}>{busy ? "正在生成…" : "生成开发信"}</button></div></section>;
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { ImageValidationError, MAX_IMAGE_COUNT, validateAndPrepareImage } from "@/lib/vision/images";
 import { analyzeWithVolcengine, VolcengineError } from "@/lib/vision/volcengine";
-import { getArkConfigStatus, REQUIRED_ARK_VARIABLES } from "@/lib/vision/config";
+import { getArkConfigStatus } from "@/lib/vision/config";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -27,6 +27,10 @@ const messages: Record<string, string> = {
   NETWORK_ERROR: "服务器无法连接火山方舟，请检查网络后重试。",
   UPSTREAM_ERROR: "火山方舟服务暂时不可用，请稍后重试。",
   MODEL_OUTPUT_INVALID: "模型未返回可用的结构化客户资料，请重试或使用演示结果继续。",
+  EMPTY_MODEL_OUTPUT: "AI 服务返回了空结果，请重试或使用演示结果继续。",
+  INVALID_MODEL_JSON: "AI 返回内容无法解析为客户资料，请重试或使用演示结果继续。",
+  MODEL_SCHEMA_INVALID: "AI 返回的客户资料结构不完整，请重试或使用演示结果继续。",
+  MODEL_CORE_DATA_MISSING: "AI 未识别到可确认的核心客户资料，请更换清晰截图或使用演示结果继续。",
   DUPLICATE_REQUEST: "相同分析请求正在处理或刚刚完成，请勿重复提交。",
   INTERNAL_ERROR: "服务器处理图片时发生错误，请稍后重试。",
 };
@@ -37,20 +41,19 @@ function errorResponse(code: string, status: number, requestId: string) {
 
 export function GET() {
   try {
-    const { configured, missingVariables } = getArkConfigStatus();
+    const { configured } = getArkConfigStatus();
     return NextResponse.json(
       {
         mode: configured ? "volcengine" : "mock",
         configured,
-        missingVariables,
-        message: configured ? "已配置火山方舟视觉 AI。" : messages.CONFIG_MISSING,
       },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
-  } catch {
+  } catch (error) {
+    console.error(`vision-config ${JSON.stringify({ event: "status-failed", errorType: error instanceof Error ? error.name : "UnknownError" })}`);
     return NextResponse.json(
-      { mode: "mock", configured: false, missingVariables: [...REQUIRED_ARK_VARIABLES], message: "无法读取视觉 AI 服务端配置，当前使用演示分析。" },
-      { headers: { "Cache-Control": "no-store, max-age=0" } },
+      { error: { code: "CONFIG_STATUS_FAILED" } },
+      { status: 500, headers: { "Cache-Control": "no-store, max-age=0" } },
     );
   }
 }

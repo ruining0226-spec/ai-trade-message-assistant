@@ -3,12 +3,12 @@ export type TaskStatus =
   | "待跟进" | "有效线索" | "无效客户" | "已成交" | "已归档";
 
 export type Channel = "LinkedIn" | "Facebook" | "Email" | "WhatsApp";
-export type CustomerType = "经销商" | "代理商" | "终端工厂" | "设备集成商" | "工程项目方" | "服务商" | "其他" | "无法判断";
+export type CustomerType = "经销商" | "代理商" | "终端工厂" | "设备集成商" | "工程项目方" | "系统集成商/工程公司" | "服务商" | "贸易商" | "制造商/同行" | "行业联系人" | "其他" | "无法判断";
 export type DecisionInfluence = "高" | "中" | "低" | "无法判断";
 export type AnalysisSource = "volcengine" | "mock" | "legacy";
-export type FieldSource = "screenshot" | "inference" | "unknown";
+export type FieldSource = "screenshot" | "user_confirmed" | "inference" | "unknown";
 export type Confidence = "high" | "medium" | "low";
-export type CustomerTypeCode = "distributor" | "agent" | "end_user_factory" | "oem_integrator" | "service_provider" | "unknown";
+export type CustomerTypeCode = "distributor" | "agent" | "end_user_factory" | "system_integrator" | "service_provider" | "trader" | "manufacturer_competitor" | "industry_contact" | "unknown";
 export type ConversationRole = "customer" | "salesperson";
 export type ConversationPlatform = "linkedin" | "whatsapp" | "email" | "facebook" | "other";
 export type CustomerStage = "new" | "invitation_sent" | "connected" | "replied" | "needs_discovery" | "quoting" | "technical_discussion" | "won" | "paused" | "invalid";
@@ -65,6 +65,9 @@ export interface CustomerAnalysisResponse {
   recommendedApproach: string[];
   completenessScore: number;
   conflicts: string[];
+  confirmedFacts: string[];
+  reasonableInferences: string[];
+  unknownInformation: string[];
   outreach: GeneratedOutreach;
 }
 
@@ -91,6 +94,9 @@ export interface CustomerAnalysis {
   companyBusinessField?: StructuredField;
   decisionInfluenceField?: StructuredField<DecisionInfluence>;
   inferences?: AnalysisInference[];
+  confirmedFacts?: string[];
+  reasonableInferences?: string[];
+  unknownInformation?: string[];
   generatedOutreach?: GeneratedOutreach;
 }
 
@@ -201,7 +207,11 @@ export interface FollowUpGeneration {
 export interface FollowUpGenerationRequest {
   taskId: string;
   customer: Customer;
-  analysis: Pick<CustomerAnalysis, "mainBusiness" | "decisionInfluence" | "potentialApplications" | "recommendedAngle" | "uncertainties" | "conflicts">;
+  analysis: Pick<CustomerAnalysis, "mainBusiness" | "decisionInfluence" | "potentialApplications" | "recommendedAngle" | "uncertainties" | "conflicts"> & {
+    confirmedFacts: string[];
+    reasonableInferences: string[];
+    unknownInformation: string[];
+  };
   currentOutreach: string;
   followUpStage: CustomerStage;
   replyGoal: ReplyGoal;

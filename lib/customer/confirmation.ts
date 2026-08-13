@@ -32,8 +32,9 @@ const metadataKeys = {
 } as const;
 
 const customerTypeCodes: Record<CustomerType, CustomerTypeCode> = {
-  经销商: "distributor", 代理商: "agent", 终端工厂: "end_user_factory", 设备集成商: "oem_integrator",
-  工程项目方: "oem_integrator", 服务商: "service_provider", 其他: "unknown", 无法判断: "unknown",
+  经销商: "distributor", 代理商: "agent", 终端工厂: "end_user_factory", 设备集成商: "system_integrator",
+  工程项目方: "system_integrator", "系统集成商/工程公司": "system_integrator", 服务商: "service_provider",
+  贸易商: "trader", "制造商/同行": "manufacturer_competitor", 行业联系人: "industry_contact", 其他: "unknown", 无法判断: "unknown",
 };
 
 function fieldFor(analysis: CustomerAnalysis, key: ConfirmationFieldKey): StructuredField<string> | undefined {
@@ -58,7 +59,8 @@ export function getConfirmationRisks(customer: Customer, analysis: CustomerAnaly
     if (!field) {
       return missing ? [{ key: definition.key, label: definition.label, value, reason: `旧任务缺少该字段的可靠信息，${definition.impact}。` }] : [];
     }
-    const risky = missing || field.needsReview || field.confidence !== "high" || field.source !== "screenshot";
+    const confirmedSource = field.source === "screenshot" || field.source === "user_confirmed";
+    const risky = missing || field.needsReview || field.confidence !== "high" || !confirmedSource;
     if (!risky) return [];
     const reason = missing
       ? `当前无法确认，${definition.impact}。`
@@ -99,7 +101,7 @@ export function applyManualConfirmation(customer: Customer, analysis: CustomerAn
   const previous = fieldFor(analysis, key);
   const nextField = {
     value: key === "customerType" ? customerTypeCodes[nextCustomer.customerType] : normalized || null,
-    source: previous?.source || "unknown",
+    source: "user_confirmed",
     evidence: `用户人工修改并确认。${previous?.evidence ? ` 原依据：${previous.evidence}` : ""}`,
     confidence: normalized ? "high" : "low",
     needsReview: !normalized,

@@ -14,6 +14,9 @@ test("旧任务缺少分析来源和新增视觉字段时仍可打开", () => {
   assert.equal(normalized.analysisSource, "legacy");
   assert.equal(normalized.analysis.decisionInfluence, "无法判断");
   assert.deepEqual(normalized.analysis.evidence, []);
+  assert.deepEqual(normalized.analysis.confirmedFacts, []);
+  assert.deepEqual(normalized.analysis.reasonableInferences, []);
+  assert.deepEqual(normalized.analysis.unknownInformation, []);
   assert.equal(normalized.analysis.structuredFields, undefined);
   assert.equal(normalized.followUpStage, "connected");
   assert.equal(normalized.conversationMessages[0]?.role, "salesperson");
