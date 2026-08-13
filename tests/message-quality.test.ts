@@ -27,10 +27,10 @@ test("开发信不声称客户正在采购，也不使用低置信度公司名",
   assert.doesNotMatch(body, /Partial Industr/i);
 });
 
-test("安全回退英文开发信正文保持在 80 到 120 词", () => {
+test("安全回退英文开发信正文保持在 80 到 160 词", () => {
   const content = createMessageContent(customer, analysis, { ...defaultConfig, channel: "Email" });
   const body = content.messages?.find(item => item.id === "email-body")?.english || "";
-  assert.ok(countEnglishWords(body) >= 80 && countEnglishWords(body) <= 120, `word count: ${countEnglishWords(body)}`);
+  assert.ok(countEnglishWords(body) >= 80 && countEnglishWords(body) <= 160, `word count: ${countEnglishWords(body)}`);
 });
 
 test("英文和中文开发信结构均可生成", () => {

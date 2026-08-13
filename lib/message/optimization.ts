@@ -10,7 +10,7 @@ export const QUICK_OPTIMIZATION_REQUIREMENTS = {
 export type QuickOptimizationLabel = keyof typeof QUICK_OPTIMIZATION_REQUIREMENTS;
 
 function confirmedValue(value: string, field: StructuredField | undefined) {
-  return field?.value && field.source === "screenshot" && field.confidence !== "low" && !field.needsReview ? value.trim() : "";
+  return field?.value && (field.source === "screenshot" || field.source === "user_confirmed") && field.confidence !== "low" && !field.needsReview ? value.trim() : "";
 }
 
 export function buildCustomerSummary(customer: Customer, analysis: CustomerAnalysis) {
@@ -20,7 +20,7 @@ export function buildCustomerSummary(customer: Customer, analysis: CustomerAnaly
     confirmedValue(customer.title, fields?.jobTitle) && `Role: ${confirmedValue(customer.title, fields?.jobTitle)}`,
     confirmedValue(customer.companyName, fields?.companyName) && `Company: ${confirmedValue(customer.companyName, fields?.companyName)}`,
     confirmedValue(customer.industry, fields?.industry) && `Industry: ${confirmedValue(customer.industry, fields?.industry)}`,
-    fields?.customerType.value && fields.customerType.source === "screenshot" && fields.customerType.confidence !== "low" && !fields.customerType.needsReview && `Customer type: ${fields.customerType.value}`,
+    fields?.customerType.value && (fields.customerType.source === "screenshot" || fields.customerType.source === "user_confirmed") && fields.customerType.confidence !== "low" && !fields.customerType.needsReview && `Customer type: ${fields.customerType.value}`,
   ].filter(Boolean);
   return parts.length ? parts.join("; ") : "No confirmed customer facts are available. Keep the copy generic and cautious.";
 }

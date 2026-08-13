@@ -6,7 +6,7 @@ import type { FollowUpGenerationRequest } from "@/types";
 const request: FollowUpGenerationRequest = {
   taskId: "task-a",
   customer: { id: "customer-a", name: "Alex", title: "Engineer", companyName: "Example Ltd", country: "UK", industry: "Manufacturing", customerType: "终端工厂" },
-  analysis: { mainBusiness: "Manufacturing", decisionInfluence: "中", potentialApplications: "Possible plant air", recommendedAngle: "Confirm demand", uncertainties: "Demand not confirmed", conflicts: [] },
+  analysis: { mainBusiness: "Manufacturing", decisionInfluence: "中", potentialApplications: "Possible plant air", recommendedAngle: "Confirm demand", uncertainties: "Demand not confirmed", conflicts: [], confirmedFacts: [], reasonableInferences: [], unknownInformation: ["Required flow"] },
   currentOutreach: "Hello Alex",
   followUpStage: "replied",
   replyGoal: "了解需求",
